@@ -258,7 +258,7 @@ details.card summary .sub{font:400 12.5px var(--font-b);margin:0}
 
 <script id="snapshot" type="text/plain">CEBU DEPOT,,,,,,
 INVENTORY COUNT RESULT>>>>>FPM,,,,,,
-,,,,,,
+10/21/2026,,,,,,
 ,,,,,,
 Storage Bin,Material Number:,Description:,UM:,Total Count,Qty/Bx,Expiry Date
 CB-A061-01,FG03732,FG-DANES CHEESE SLICES 250G X 28 N,BX,1,28,6/19/2026
@@ -544,7 +544,7 @@ OVERFLOW R9,FG05715,FG-CDO CRISPY CHICKEN BURGER 228GX2SAVE20,BX,6,12,6/18/2027
 /* ---------- config ---------- */
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQaGcQ1clA1jiJ41K2PB3mB3vcCYUxe-oiGrUamnnHi-L4-bJx0q8suvW3-xBZEoCK6dGtkmrd-Hcjc/pub?gid=0&single=true&output=csv';
 const REFRESH_MS = 5 * 60 * 1000;
-const SNAPSHOT_DATE = ' ';
+const SNAPSHOT_DATE = 'count of Oct 21, 2026';
 const ST = [
   {key:'expired',  label:'Expired',   short:'Expired',   long:'Expired'},
   {key:'critical', label:'<30 Days',  short:'0–30 days',  long:'Critical (0–30 days)'},
@@ -622,7 +622,7 @@ function parseDate(v){
   const t=Date.parse(v); if(!isNaN(t)){ const d=new Date(t); return mk(d.getFullYear(),d.getMonth()+1,d.getDate()); }
   return null;
 }
-function parseNum(v){ const n=parseFloat(String(v==null?'':v).replace(/[,\s]/g,'')); return isFinite(n)?n:0; }
+function parseNum(v){ const n=parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,'')); return isFinite(n)?n:0; }
 function mapColumns(h){
   const n=h.map(norm), out={};
   for(const k of Object.keys(FIELDS)){
@@ -762,6 +762,7 @@ function renderKpis(){
   const R=S.records, skus=new Set(R.map(r=>r.sku||r.name)).size, qty=R.reduce((a,r)=>a+r.qty,0);
   const ex=agg(CAT.expired), l30=agg(CAT.le30), l60=agg(CAT.le60), l90=agg(CAT.le90), sf=agg(CAT.safe), u=um();
   const val=R.reduce((a,r)=>a+r.qty*r.cost,0);
+  const vexp=R.filter(CAT.expired).reduce((a,r)=>a+r.qty*r.cost,0), v60=R.filter(CAT.le60).reduce((a,r)=>a+r.qty*r.cost,0);
   const K=[
     {k:'all',cls:'st-all',lb:'Total Products',v:fmtN(skus),s:`${fmtN(R.length)} stock lines, distinct SKUs`},
     {k:null,cls:'st-all',lb:'Total Inventory Quantity',v:fmtN(qty),s:`${esc(u)} on hand`},
@@ -770,7 +771,7 @@ function renderKpis(){
     {k:'le60',cls:'st-warning',lb:'Expiring Within 60 Days',v:fmtN(l60.n),s:`${fmtN(l60.q)} ${esc(u)} · includes the 30-day lines`},
     {k:'le90',cls:'st-monitor',lb:'Expiring Within 90 Days',v:fmtN(l90.n),s:`${fmtN(l90.q)} ${esc(u)} · includes the 60-day lines`},
     {k:'safe',cls:'st-safe',lb:'Safe Products (>90 Days)',v:fmtN(sf.n),s:`${fmtN(sf.q)} ${esc(u)} · lines`},
-    S.meta.hasCost ? {k:null,cls:'st-all',lb:'Inventory Value',v:'₱'+fmtN(val),s:'quantity × unit cost'}
+    S.meta.hasCost ? {k:null,cls:'st-all',lb:'Inventory Value',v:'₱'+fmtN(val),s:'₱'+fmtN(vexp)+' expired · ₱'+fmtN(v60)+' within 60 days'}
                    : {k:null,cls:'st-all',lb:'Inventory Value',v:'—',s:'No unit cost column in the sheet'}
   ];
   $('kpis').innerHTML=K.map(x=>`<button type="button" class="kpi ${x.cls}${x.k===null?' static':''}${x.k&&x.k===S.cat&&x.k!=='all'?' on':''}" ${x.k?`data-k="${x.k}"`:'tabindex="-1"'}><span class="lb"><i></i>${esc(x.lb)}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></button>`).join('');
