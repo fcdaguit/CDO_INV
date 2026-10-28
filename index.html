@@ -574,6 +574,7 @@ const FIELDS = {
   qty:['totalcount','inventoryquantity','quantity','qty','onhand','stockqty','stock'],
   expiry:['expirydate','expirationdate','expiry','expdate','exp','bestbefore','useby'],
   cost:['unitcost','cost','costperbx','costperbox','costbx','standardcost','stdcost','landedcost','unitprice','pricebx','priceperbx','price','srp'],
+  total:['totalcost','totalvalue','totalamount','extendedcost','extendedamount','inventoryvalue','stockvalue','linetotal','amount','value'],
   perbox:['qtybx','qtyperbox','pcsperbox','pcsbx','packsize'],
   category:['category','productcategory','brand','class','group'],
   bin:['storagebin','bin','location'],
@@ -629,9 +630,9 @@ function parseNum(v){ const n=parseFloat(String(v==null?'':v).replace(/[^0-9.\-]
 function mapColumns(h){
   const n=h.map(norm), out={};
   for(const k of Object.keys(FIELDS)){
-    let idx=-1;
-    for(const c of FIELDS[k]){ idx=n.indexOf(c); if(idx>-1) break; }
-    if(idx<0) for(const c of FIELDS[k]){ if(c.length<4) continue; idx=n.findIndex(x=>x.includes(c)); if(idx>-1) break; }
+    let idx=-1; const nn = k==='cost' ? n.map(x=>/total|amount|value|extended|linetotal/.test(x)?'':x) : n;
+    for(const c of FIELDS[k]){ idx=nn.indexOf(c); if(idx>-1) break; }
+    if(idx<0) for(const c of FIELDS[k]){ if(c.length<4) continue; idx=nn.findIndex(x=>x&&x.includes(c)); if(idx>-1) break; }
     out[k]=idx;
   }
   return out;
@@ -644,8 +645,11 @@ function brandOf(name){
   return b;
 }
 function build(rows){
-  let hi=rows.slice(0,40).findIndex(r=>r.some(c=>norm(c).includes('expir')));
-  if(hi<0) hi=0;
+  let hi=-1, best=0;
+  rows.slice(0,60).forEach((r,i)=>{ const m=mapColumns(r);
+    const s=['name','sku','qty','expiry','batch','bin','cost','um'].filter(k=>m[k]>-1).length+(m.expiry>-1?2:0)+(m.name>-1?2:0);
+    if(s>best){ best=s; hi=i; } });
+  if(hi<0||best<5) hi=Math.max(0,rows.slice(0,40).findIndex(r=>r.some(c=>norm(c).includes('expir'))));
   const header=rows[hi]||[]; const map=mapColumns(header);
   if(map.name<0||map.expiry<0)
     throw new Error('Could not find a product-name or expiry-date column. Headers seen: '+header.filter(Boolean).join(' | '));
@@ -657,16 +661,17 @@ function build(rows){
     const expiry=parseDate(get(r,map.expiry));
     if(!expiry){ noDate++; continue; }
     const qty=parseNum(get(r,map.qty)); if(qty<=0) zero++;
-    const cost=map.cost>-1?parseNum(get(r,map.cost)):0, perBox=map.perbox>-1?parseNum(get(r,map.perbox)):1;
+    const cost=map.cost>-1?parseNum(get(r,map.cost)):0, perBox=map.perbox>-1?parseNum(get(r,map.perbox)):1, lineTotal=map.total>-1?parseNum(get(r,map.total)):0;
     const cat=map.category>-1&&get(r,map.category)?get(r,map.category):brandOf(name);
-    records.push({name, sku:get(r,map.sku), batch:get(r,map.batch), bin:get(r,map.bin), qty, cost, perBox, expiry, cat,
+    records.push({name, sku:get(r,map.sku), batch:get(r,map.batch), bin:get(r,map.bin), qty, cost, perBox, lineTotal, expiry, cat,
       um:get(r,map.um), days:0, status:'safe'});
   }
   let site='', title='', countDate=null;
   for(let i=0;i<hi;i++){ const c=String((rows[i]||[])[0]||'').trim(); if(!c) continue;
     const d=parseDate(c); if(d&&!countDate) countDate=d; else if(!d){ if(!site) site=c; else if(!title) title=c.replace(/>+/g,' · '); } }
   const umv=(records.find(r=>r.um)||{}).um||'';
-  return {records, meta:{site,title,countDate,map,header,headerRow:hi,skipped,zero,noDate,um:umv,hasCost:map.cost>-1&&records.some(r=>r.cost>0),
+  return {records, meta:{site,title,countDate,map,header,headerRow:hi,skipped,zero,noDate,um:umv,costMode:(map.cost>-1&&records.some(r=>r.cost>0))?'unit':(map.total>-1&&records.some(r=>r.lineTotal>0))?'total':'',
+    hasCost:(map.cost>-1&&records.some(r=>r.cost>0))||(map.total>-1&&records.some(r=>r.lineTotal>0)),
     brandDerived:map.category<0}};
 }
 function reclass(){
@@ -675,7 +680,7 @@ function reclass(){
   const q=S.records.map(r=>r.qty).filter(x=>x>0).sort((a,b)=>a-b);
   S.hi=q.length?Math.max(10,q[Math.floor(q.length*0.75)]):10;
 }
-const valOf = r => COST_BASIS==='piece' ? r.qty*(r.perBox||1)*r.cost : r.qty*r.cost;
+const valOf = r => S.meta.costMode==='total' ? r.lineTotal : COST_BASIS==='piece' ? r.qty*(r.perBox||1)*r.cost : r.qty*r.cost;
 function agg(fn){ let n=0,q=0; for(const r of S.records) if(fn(r)){ n++; q+=r.qty; } return {n,q}; }
 
 /* ---------- load ---------- */
@@ -847,7 +852,7 @@ function renderFooter(){
     `Columns found: ${h.filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join(' ')}`,
     `Source: published Google Sheet (CSV), checked every 5 minutes. Google may cache a published sheet for a few minutes after an edit.`,
     `Header row found at sheet row ${m.headerRow+1}. Product name ← ${nm(map.name)} · SKU ← ${nm(map.sku)} · Quantity ← ${nm(map.qty)} (${esc(um())}) · Expiry ← ${nm(map.expiry)}`,
-    `Batch number: ${map.batch>-1?nm(map.batch):'the sheet has no batch column, so the Storage Bin ('+nm(map.bin)+') is shown instead'}. Unit cost: ${map.cost>-1?nm(map.cost)+' (per '+(COST_BASIS==='piece'?'piece':'box')+')':'none matched, so Inventory Value is not calculated. Accepted headers: Unit Cost, Cost, Cost per BX, Standard Cost, Unit Price, Price'}. Category: ${map.category>-1?nm(map.category):'no column, so the brand is taken from the product name'}.`,
+    `Batch number: ${map.batch>-1?nm(map.batch):'the sheet has no batch column, so the Storage Bin ('+nm(map.bin)+') is shown instead'}. Unit cost: ${m.costMode==='total'?nm(map.total)+' (line total, used as is)':map.cost>-1?nm(map.cost)+' (per '+(COST_BASIS==='piece'?'piece':'box')+')':'none matched, so Inventory Value is not calculated. Accepted headers: Unit Cost, Cost, Cost per BX, Standard Cost, Unit Price, Price, or a line total such as Total Cost, Amount'}. Category: ${map.category>-1?nm(map.category):'no column, so the brand is taken from the product name'}.`,
     `${fmtN(S.records.length)} lines loaded. ${fmtN(m.zero)} lines have zero or blank quantity, ${fmtN(m.noDate)} rows with a product but no readable expiry date were left out.`,
     `High qty tag: a Critical line whose quantity is in the top quarter of all lines (${fmtN(S.hi)} ${esc(um())} or more).`
   ].map(x=>`<div>${x}</div>`).join('');
