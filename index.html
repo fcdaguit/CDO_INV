@@ -544,6 +544,8 @@ OVERFLOW R9,FG05715,FG-CDO CRISPY CHICKEN BURGER 228GX2SAVE20,BX,6,12,6/18/2027
 /* ---------- config ---------- */
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQaGcQ1clA1jiJ41K2PB3mB3vcCYUxe-oiGrUamnnHi-L4-bJx0q8suvW3-xBZEoCK6dGtkmrd-Hcjc/pub?gid=0&single=true&output=csv';
 const REFRESH_MS = 5 * 60 * 1000;
+// Unit Cost is per box (the quantity unit). Set to 'piece' if the sheet's cost is per piece; value then = boxes x Qty/Bx x cost.
+const COST_BASIS = 'box';
 const SNAPSHOT_DATE = 'count of Oct 21, 2026';
 const ST = [
   {key:'expired',  label:'Expired',   short:'Expired',   long:'Expired'},
@@ -571,7 +573,8 @@ const FIELDS = {
   batch:['batchnumber','batchno','batch','lotnumber','lotno','lot'],
   qty:['totalcount','inventoryquantity','quantity','qty','onhand','stockqty','stock'],
   expiry:['expirydate','expirationdate','expiry','expdate','exp','bestbefore','useby'],
-  cost:['unitcost','cost','unitprice','price'],
+  cost:['unitcost','cost','costperbx','costperbox','costbx','standardcost','stdcost','landedcost','unitprice','pricebx','priceperbx','price','srp'],
+  perbox:['qtybx','qtyperbox','pcsperbox','pcsbx','packsize'],
   category:['category','productcategory','brand','class','group'],
   bin:['storagebin','bin','location'],
   um:['um','uom','unit','unitofmeasure']
@@ -654,9 +657,9 @@ function build(rows){
     const expiry=parseDate(get(r,map.expiry));
     if(!expiry){ noDate++; continue; }
     const qty=parseNum(get(r,map.qty)); if(qty<=0) zero++;
-    const cost=map.cost>-1?parseNum(get(r,map.cost)):0;
+    const cost=map.cost>-1?parseNum(get(r,map.cost)):0, perBox=map.perbox>-1?parseNum(get(r,map.perbox)):1;
     const cat=map.category>-1&&get(r,map.category)?get(r,map.category):brandOf(name);
-    records.push({name, sku:get(r,map.sku), batch:get(r,map.batch), bin:get(r,map.bin), qty, cost, expiry, cat,
+    records.push({name, sku:get(r,map.sku), batch:get(r,map.batch), bin:get(r,map.bin), qty, cost, perBox, expiry, cat,
       um:get(r,map.um), days:0, status:'safe'});
   }
   let site='', title='', countDate=null;
@@ -672,6 +675,7 @@ function reclass(){
   const q=S.records.map(r=>r.qty).filter(x=>x>0).sort((a,b)=>a-b);
   S.hi=q.length?Math.max(10,q[Math.floor(q.length*0.75)]):10;
 }
+const valOf = r => COST_BASIS==='piece' ? r.qty*(r.perBox||1)*r.cost : r.qty*r.cost;
 function agg(fn){ let n=0,q=0; for(const r of S.records) if(fn(r)){ n++; q+=r.qty; } return {n,q}; }
 
 /* ---------- load ---------- */
@@ -761,8 +765,8 @@ $('alerts').addEventListener('click',e=>{ const b=e.target.closest('[data-go]');
 function renderKpis(){
   const R=S.records, skus=new Set(R.map(r=>r.sku||r.name)).size, qty=R.reduce((a,r)=>a+r.qty,0);
   const ex=agg(CAT.expired), l30=agg(CAT.le30), l60=agg(CAT.le60), l90=agg(CAT.le90), sf=agg(CAT.safe), u=um();
-  const val=R.reduce((a,r)=>a+r.qty*r.cost,0);
-  const vexp=R.filter(CAT.expired).reduce((a,r)=>a+r.qty*r.cost,0), v60=R.filter(CAT.le60).reduce((a,r)=>a+r.qty*r.cost,0);
+  const val=R.reduce((a,r)=>a+valOf(r),0);
+  const vexp=R.filter(CAT.expired).reduce((a,r)=>a+valOf(r),0), v60=R.filter(CAT.le60).reduce((a,r)=>a+valOf(r),0);
   const K=[
     {k:'all',cls:'st-all',lb:'Total Products',v:fmtN(skus),s:`${fmtN(R.length)} stock lines, distinct SKUs`},
     {k:null,cls:'st-all',lb:'Total Inventory Quantity',v:fmtN(qty),s:`${esc(u)} on hand`},
@@ -772,7 +776,7 @@ function renderKpis(){
     {k:'le90',cls:'st-monitor',lb:'Expiring Within 90 Days',v:fmtN(l90.n),s:`${fmtN(l90.q)} ${esc(u)} · includes the 60-day lines`},
     {k:'safe',cls:'st-safe',lb:'Safe Products (>90 Days)',v:fmtN(sf.n),s:`${fmtN(sf.q)} ${esc(u)} · lines`},
     S.meta.hasCost ? {k:null,cls:'st-all',lb:'Inventory Value',v:'₱'+fmtN(val),s:'₱'+fmtN(vexp)+' expired · ₱'+fmtN(v60)+' within 60 days'}
-                   : {k:null,cls:'st-all',lb:'Inventory Value',v:'—',s:'No unit cost column in the sheet'}
+                   : {k:null,cls:'st-all',lb:'Inventory Value',v:'—',s:S.meta.map.cost>-1?'Unit cost column is empty':'No unit cost column found. See Data source below'}
   ];
   $('kpis').innerHTML=K.map(x=>`<button type="button" class="kpi ${x.cls}${x.k===null?' static':''}${x.k&&x.k===S.cat&&x.k!=='all'?' on':''}" ${x.k?`data-k="${x.k}"`:'tabindex="-1"'}><span class="lb"><i></i>${esc(x.lb)}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></button>`).join('');
 }
@@ -840,9 +844,10 @@ function renderFooter(){
   const m=S.meta, h=m.header, map=m.map, nm=i=>i>-1?`<code>${esc(h[i])}</code>`:'none';
   $('legend').innerHTML=ST.map(s=>`<span class="pill st-${s.key}">${esc(s.long)}</span>`).join('')+'<span>Days remaining = expiry date − today. Stock expiring today counts as Critical.</span>';
   $('dq').innerHTML=[
+    `Columns found: ${h.filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join(' ')}`,
     `Source: published Google Sheet (CSV), checked every 5 minutes. Google may cache a published sheet for a few minutes after an edit.`,
     `Header row found at sheet row ${m.headerRow+1}. Product name ← ${nm(map.name)} · SKU ← ${nm(map.sku)} · Quantity ← ${nm(map.qty)} (${esc(um())}) · Expiry ← ${nm(map.expiry)}`,
-    `Batch number: ${map.batch>-1?nm(map.batch):'the sheet has no batch column, so the Storage Bin ('+nm(map.bin)+') is shown instead'}. Unit cost: ${map.cost>-1?nm(map.cost):'none, so Inventory Value is not calculated'}. Category: ${map.category>-1?nm(map.category):'no column, so the brand is taken from the product name'}.`,
+    `Batch number: ${map.batch>-1?nm(map.batch):'the sheet has no batch column, so the Storage Bin ('+nm(map.bin)+') is shown instead'}. Unit cost: ${map.cost>-1?nm(map.cost)+' (per '+(COST_BASIS==='piece'?'piece':'box')+')':'none matched, so Inventory Value is not calculated. Accepted headers: Unit Cost, Cost, Cost per BX, Standard Cost, Unit Price, Price'}. Category: ${map.category>-1?nm(map.category):'no column, so the brand is taken from the product name'}.`,
     `${fmtN(S.records.length)} lines loaded. ${fmtN(m.zero)} lines have zero or blank quantity, ${fmtN(m.noDate)} rows with a product but no readable expiry date were left out.`,
     `High qty tag: a Critical line whose quantity is in the top quarter of all lines (${fmtN(S.hi)} ${esc(um())} or more).`
   ].map(x=>`<div>${x}</div>`).join('');
